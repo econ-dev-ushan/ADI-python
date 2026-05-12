@@ -8,7 +8,10 @@ import os
 from pathlib import Path
 
 from azure.ai.documentintelligence import DocumentIntelligenceClient
-from azure.ai.documentintelligence.models import DocumentContentFormat
+from azure.ai.documentintelligence.models import (
+    DocumentAnalysisFeature,
+    DocumentContentFormat,
+)
 from azure.core.credentials import AzureKeyCredential
 from dotenv import load_dotenv
 
@@ -57,6 +60,30 @@ def create_client(endpoint: str, api_key: str) -> DocumentIntelligenceClient:
     )
 
 
+def extract_language_summary(result: object) -> list[dict[str, object]]:
+    """Extract detected language details from an analysis result into a JSON-friendly shape."""
+    languages = getattr(result, "languages", None) or []
+    language_summary: list[dict[str, object]] = []
+
+    for language in languages:
+        language_summary.append(
+            {
+                "locale": language.locale,
+                "confidence": language.confidence,
+                "span_count": len(language.spans) if language.spans else 0,
+                "spans": [
+                    {
+                        "offset": span.offset,
+                        "length": span.length,
+                    }
+                    for span in (language.spans or [])
+                ],
+            }
+        )
+
+    return language_summary
+
+
 def analyze_pdf(input_pdf_path: str, output_dir: str = "output") -> None:
     """Analyze a PDF with the prebuilt-layout model and save Markdown, text, and raw JSON outputs."""
     endpoint, api_key = load_configuration()
@@ -70,6 +97,7 @@ def analyze_pdf(input_pdf_path: str, output_dir: str = "output") -> None:
         poller = client.begin_analyze_document(
             model_id="prebuilt-layout",
             body=pdf_stream,
+            features=[DocumentAnalysisFeature.LANGUAGES],
             output_content_format=DocumentContentFormat.MARKDOWN,
         )
     result = poller.result()
@@ -77,12 +105,19 @@ def analyze_pdf(input_pdf_path: str, output_dir: str = "output") -> None:
     markdown_path = out_dir / f"{input_path.stem}.md"
     json_path = out_dir / f"{input_path.stem}.raw.json"
     text_path = out_dir / f"{input_path.stem}.txt"
+    language_path = out_dir / f"{input_path.stem}.languages.json"
 
     content = result.content or ""
+    language_summary = extract_language_summary(result)
+
     markdown_path.write_text(content, encoding="utf-8")
     text_path.write_text(content, encoding="utf-8")
     json_path.write_text(
         json.dumps(result.as_dict(), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    language_path.write_text(
+        json.dumps(language_summary, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
 
@@ -93,8 +128,15 @@ def analyze_pdf(input_pdf_path: str, output_dir: str = "output") -> None:
     print(f"Markdown: {markdown_path}")
     print(f"Raw JSON: {json_path}")
     print(f"Text copy: {text_path}")
+    print(f"Languages JSON: {language_path}")
     print(f"Content format: {content_format}")
     print(f"Pages: {page_count}")
+    print(f"Detected languages: {len(language_summary)}")
+    for language in language_summary:
+        print(
+            f" - {language['locale']} "
+            f"(confidence={language['confidence']}, spans={language['span_count']})"
+        )
     print(f"TLS verify disabled: {is_tls_verification_disabled()}")
 
 
